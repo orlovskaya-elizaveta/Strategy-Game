@@ -1,170 +1,188 @@
-﻿using System.Collections.Generic;
-using UnityEngine;
+﻿using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 
+// State object for reading client data asynchronously  
+public class StateObject
+{
+    // Client  socket.  
+    public Socket workSocket = null;
+    // Size of receive buffer.  
+    public const int BufferSize = 1024;
+    // Receive buffer.  
+    public byte[] buffer = new byte[BufferSize];
+    // Received data string.  
+    public StringBuilder sb = new StringBuilder();
 
-public class ViewController : MonoBehaviour {
+    public ServerLogic serverLogic = new ServerLogic();
+}
 
-    Server server;
-    NetworkManager networkManager;
-    int countOfCells;
-    int countOfUnits;
+public class AsynchronousSocketListener
+{
+    // Thread signal.  
+    public static ManualResetEvent allDone = new ManualResetEvent(false);
 
-    Dictionary<int, Transform> selectedUnits;
-    Dictionary<int, List<Point>> unitsPaths;
-
-    bool isWalking;
-    private float startTime;
-    Dictionary<int, DataForMove> MoveDataList;
-    float journeyLength = 1;
-
-    // Use this for initialization
-    void Awake () {
-
-        server = new Server();
-        server.GetStartData();
-        networkManager = new NetworkManager(this);
-
-        selectedUnits = new Dictionary<int, Transform>();
-        unitsPaths = new Dictionary<int, List<Point>>();
-        MoveDataList = new Dictionary<int, DataForMove>();
-        isWalking = false;
-        startTime = Time.time;
+    public AsynchronousSocketListener()
+    {
     }
 
-    // Update is called once per frame
-    void Update () {
+    public static void StartListening()
+    {
+        // Establish the local endpoint for the socket.  
+        // The DNS name of the computer  
+        // running the listener is "host.contoso.com".  
+        IPHostEntry ipHostInfo = Dns.GetHostEntry("localhost");
+        IPAddress ipAddress = ipHostInfo.AddressList[0];
+        IPEndPoint localEndPoint = new IPEndPoint(ipAddress, 11000);
 
-        if (Input.GetMouseButtonDown(0) && !isWalking)
+        // Create a TCP/IP socket.  
+        Socket listener = new Socket(ipAddress.AddressFamily,
+            SocketType.Stream, ProtocolType.Tcp);
+
+        // Bind the socket to the local endpoint and listen for incoming connections.  
+        try
         {
-            RaycastHit hit;
-            Ray ray = GetComponent<Camera>().ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, out hit))
-                if (hit.transform.tag == "Unit")
-                {
-                    SelectUnit(hit.transform.GetComponent<Unit>());
-                }
-                else if (hit.transform.tag == "Cell")
-                {
-                    MoveUnitsTo(hit.transform.position);
-                }
-        }
-        
-        if (isWalking)
-        {
-            //рисуем движение
-            if (unitsPaths.Any(entry => (entry.Value != null) && (entry.Value.Count != 0)))
+            listener.Bind(localEndPoint);
+            listener.Listen(100);
+
+            while (true)
             {
-                foreach (KeyValuePair<int, Transform> entry in selectedUnits)
-                {
-                    if (unitsPaths[entry.Key] != null && unitsPaths[entry.Key].Count > 0)
-                    {
-                        float distCovered = (Time.time - MoveDataList[entry.Key].startTime) * 5.0f;
-                        float fracJourney = distCovered / journeyLength;
-                        if (fracJourney > 1) fracJourney = 1;
+                // Set the event to nonsignaled state.  
+                allDone.Reset();
 
-                        entry.Value.position = Vector3.Lerp(MoveDataList[entry.Key].startPos, MoveDataList[entry.Key].endPos, fracJourney);
+                // Start an asynchronous socket to listen for connections.  
+                Console.WriteLine("Waiting for a connection...");
+                listener.BeginAccept(
+                    new AsyncCallback(AcceptCallback),
+                    listener);
 
-                        if (entry.Value.position == MoveDataList[entry.Key].endPos)
-                        {
-                            unitsPaths[entry.Key].RemoveAt(0);
+                // Wait until a connection is made before continuing.  
+                allDone.WaitOne();
+            }
 
-                            if (unitsPaths[entry.Key].Count > 0)
-                            {
-                                MoveDataList[entry.Key] = new DataForMove
-                                    (entry.Value.position, new Vector3(unitsPaths[entry.Key].First().x, 1, unitsPaths[entry.Key].First().y));
-                            }
-                        }
-                    }
-                }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e.ToString());
+        }
+
+        Console.WriteLine("\nPress ENTER to continue...");
+        Console.Read();
+
+    }
+
+    public static void AcceptCallback(IAsyncResult ar)
+    {
+        // Signal the main thread to continue.  
+        allDone.Set();
+
+        // Get the socket that handles the client request.  
+        Socket listener = (Socket)ar.AsyncState;
+        Socket handler = listener.EndAccept(ar);
+
+        // Create the state object.  
+        StateObject state = new StateObject();
+        state.workSocket = handler;
+        Send(handler, state.serverLogic.GetStartData());
+        handler.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+            new AsyncCallback(ReadCallback), state);
+    }
+
+    public static void ReadCallback(IAsyncResult ar)
+    {
+        String content = String.Empty;
+
+        // Retrieve the state object and the handler socket  
+        // from the asynchronous state object.  
+        StateObject state = (StateObject)ar.AsyncState;
+        Socket handler = state.workSocket;
+
+        // Read data from the client socket.   
+        int bytesRead = handler.EndReceive(ar);
+
+        if (bytesRead > 0)
+        {
+            // There  might be more data, so store the data received so far.  
+            state.sb.Append(Encoding.ASCII.GetString(
+                state.buffer, 0, bytesRead));
+
+            // Check for end-of-file tag. If it is not there, read   
+            // more data.  
+            content = state.sb.ToString();
+            if (content.IndexOf("<EOF>") > -1)
+            {
+                // All the data has been read from the   
+                // client. Display it on the console.  
+                Console.WriteLine("Read {0} bytes from socket. \n Data : {1}",
+                    content.Length, content);
+                // Echo the data back to the client.  
+                Send(handler, content);
             }
             else
             {
-                isWalking = false;
-                MoveDataList.Clear();
+                // Not all data received. Get more.  
+                handler.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
+                new AsyncCallback(ReadCallback), state);
             }
         }
     }
 
-    private void SelectUnit (Unit unit)
+    private static void Send(Socket handler, String data)
     {
-        unit.ChangeFlag();
-        if (selectedUnits.ContainsKey(unit.id))
-            selectedUnits.Remove(unit.id);
-        else
-            selectedUnits.Add(unit.id, unit.transform);
+        // Convert the string data to byte data using ASCII encoding.  
+        byte[] byteData = Encoding.ASCII.GetBytes(data);
+
+        // Begin sending the data to the remote device.  
+        handler.BeginSend(byteData, 0, byteData.Length, 0,
+            new AsyncCallback(SendCallback), handler);
     }
 
-    private void MoveUnitsTo(Vector3 destination)
+    private static void SendCallback(IAsyncResult ar)
     {
-        if (selectedUnits.Count > 0)
+        try
         {
-            //запрашиваем информацию о траекториях движения
-            List<int> units = new List<int>();
-            foreach (KeyValuePair<int, Transform> entry in selectedUnits)
-            {
-                units.Add(entry.Key);
-            }            
-            unitsPaths = server.ProvideUnitPaths(units, new Point((int)destination.x, (int)destination.z));
+            // Retrieve the socket from the state object.  
+            Socket handler = (Socket)ar.AsyncState;
 
-            //сохраняем данные для передвижения юнитов
-            foreach (int id in units)
-            {
-                if ((unitsPaths[id] != null) && (unitsPaths[id].Count != 0))
-                {
-                    DataForMove data = new DataForMove(selectedUnits[id].position, new Vector3(unitsPaths[id].First().x, 1, unitsPaths[id].First().y));
-                    MoveDataList.Add(id, data);
-                }
-            }
+            // Complete sending the data to the remote device.  
+            int bytesSent = handler.EndSend(ar);
+            Console.WriteLine("Sent {0} bytes to client.", bytesSent);
 
-            isWalking = true;
+
+            //handler.Shutdown(SocketShutdown.Both);
+            //handler.Close();
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e.ToString());
         }
     }
 
-    public void ExecuteCommand(string cmd)
+    public static int Main(String[] args)
     {
-        string[] data = cmd.Split(',');
-        //если первый символ 1 - пришли начальные данные
-        if (data[0].Equals("1"))
-        {
-            countOfCells = int.Parse(data[1]);
-            countOfUnits = int.Parse(data[2]);
-
-            //генерируем поле
-            for (int i = 0; i < countOfCells; i++)
-                for (int j = 0; j < countOfCells; j++)
-                {
-                    GameObject Cube = Instantiate(Resources.Load<GameObject>("Cube"), new Vector3(i, 0, j), Quaternion.identity);
-                }
-
-            //генерируем юнитов
-            Debug.Log("countOfUnits = " + countOfUnits.ToString());
-            Debug.Log("data.length = " + data.Length.ToString());
-            for (int i = 0; i < countOfUnits; i++)
-            {
-                int id = int.Parse(data[3 + 3 * i]);
-                int x = int.Parse(data[3 + 3 * i + 1]);
-                int y = int.Parse(data[3 + 3 * i + 2]);
-                Debug.Log("id = " + id.ToString() + "; x = " + x.ToString() + "; y = " + y.ToString());
-                GameObject unit = Instantiate(Resources.Load<GameObject>("Unit"), new Vector3(x, 1, y), Quaternion.identity);
-                unit.GetComponent<Unit>().id = id;
-            }
-        }
+        StartListening();
+        return 0;
     }
 }
 
-public class Server
+
+public class ServerLogic
 {
     public int countOfCells;
     public int countOfUnits;
     public Dictionary<int, Point> unitsPositions;
     public int[,] field;
 
-    public void GetStartData ()
+    public string GetStartData()
     {
-        countOfCells = Random.Range(7, 12);
-        countOfUnits = Random.Range(1, 5);
+        Random random = new Random(); 
+        countOfCells = random.Next(7, 12);
+        countOfUnits = random.Next(1, 5);
         unitsPositions = new Dictionary<int, Point>();
         field = new int[countOfCells, countOfCells];
 
@@ -178,12 +196,23 @@ public class Server
         //расставляем юнитов и отмечаем на карте их расположение
         for (int i = 0; i < countOfUnits; i++)
         {
-            unitsPositions.Add(i, new Point(Random.Range(0, countOfCells), Random.Range(0, countOfCells)));
+            unitsPositions.Add(i, new Point(random.Next(0, countOfCells), random.Next(0, countOfCells)));
             field[unitsPositions[i].x, unitsPositions[i].y] = 1;
         }
+
+        //складываем все данные в одну строку
+        StringBuilder startData = new StringBuilder();
+        //первый символ в строке - код команды. 1 - начальные данные, 2 - пути для перемещения юнитов
+        startData.Append("1," + countOfCells.ToString() + "," + countOfUnits.ToString());
+        foreach (KeyValuePair<int, Point> unit in unitsPositions)
+        {
+            startData.Append("," + unit.Key.ToString() + "," + unit.Value.x.ToString() + "," + unit.Value.y.ToString());
+        }
+        startData.Append(",#");
+        return startData.ToString();
     }
 
-    public Dictionary<int, List<Point>> ProvideUnitPaths (List<int> unitsToMove, Point destination)
+    public Dictionary<int, List<Point>> ProvideUnitPaths(List<int> unitsToMove, Point destination)
     {
         //пути без учета пересечений юнитов
         Dictionary<int, List<Point>> initialPaths = new Dictionary<int, List<Point>>();
@@ -195,7 +224,7 @@ public class Server
         }
 
         //прогон перемещений на поиск пересечений в пути и нахождение окончательного пути для каждого каджита
-        while(initialPaths.Any(entry => (entry.Value != null) && (entry.Value.Count != 0)))
+        while (initialPaths.Any(entry => (entry.Value != null) && (entry.Value.Count != 0)))
         {
             foreach (int unitID in unitsToMove)
             {
@@ -204,7 +233,7 @@ public class Server
                 {
                     continue;
                 }
-                    
+
                 Point nextStep = thisWay.First();
 
                 //если клетка занята на этом шаге - перестраиваем путь
@@ -338,8 +367,6 @@ public class Server
         result.RemoveAt(0);
         return result;
     }
-
-
 }
 
 public struct Point
@@ -378,17 +405,5 @@ public class PathNode
         {
             return this.PathLengthFromStart + this.HeuristicEstimatePathLength;
         }
-    }
-}
-
-public struct DataForMove
-{
-    public float startTime;
-    public Vector3 startPos, endPos;
-    public DataForMove(Vector3 startPos, Vector3 endPos)
-    {
-        startTime = Time.time;
-        this.startPos = startPos;
-        this.endPos = endPos;
     }
 }
