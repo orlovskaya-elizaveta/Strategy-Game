@@ -18,7 +18,7 @@ public class StateObject
     public byte[] buffer = new byte[BufferSize];
     // Received data string.  
     public StringBuilder sb = new StringBuilder();
-
+    public ManualResetEvent receiveDone = new ManualResetEvent(false);
     public ServerLogic serverLogic = new ServerLogic();
 }
 
@@ -26,7 +26,9 @@ public class AsynchronousSocketListener
 {
     // Thread signal.  
     public static ManualResetEvent allDone = new ManualResetEvent(false);
-
+    static string receivedData;
+    private static String response = String.Empty;
+    public ServerLogic serverLogic = new ServerLogic();
     public AsynchronousSocketListener()
     {
     }
@@ -88,9 +90,16 @@ public class AsynchronousSocketListener
         // Create the state object.  
         StateObject state = new StateObject();
         state.workSocket = handler;
+
         Send(handler, state.serverLogic.GetStartData());
-        handler.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-            new AsyncCallback(ReadCallback), state);
+
+        while (true)
+        {
+            state.sb.Clear();
+            state.receiveDone.Reset();
+            handler.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0, new AsyncCallback(ReadCallback), state);
+            state.receiveDone.WaitOne();
+        }
     }
 
     public static void ReadCallback(IAsyncResult ar)
@@ -114,14 +123,15 @@ public class AsynchronousSocketListener
             // Check for end-of-file tag. If it is not there, read   
             // more data.  
             content = state.sb.ToString();
-            if (content.IndexOf("<EOF>") > -1)
+            if (content.Contains("#"))
             {
                 // All the data has been read from the   
                 // client. Display it on the console.  
                 Console.WriteLine("Read {0} bytes from socket. \n Data : {1}",
                     content.Length, content);
                 // Echo the data back to the client.  
-                Send(handler, content);
+                Send(handler, state.serverLogic.ProvideUnitPaths(content));
+                state.receiveDone.Set();
             }
             else
             {
@@ -169,6 +179,9 @@ public class AsynchronousSocketListener
         return 0;
     }
 }
+    
+
+
 
 
 public class ServerLogic
@@ -196,6 +209,14 @@ public class ServerLogic
         //расставляем юнитов и отмечаем на карте их расположение
         for (int i = 0; i < countOfUnits; i++)
         {
+            int x = random.Next(0, countOfCells);
+            int y = random.Next(0, countOfCells);
+            //проверяем, не занята ли уже эта клетка 
+            while (field[x, y] == 1)
+            {
+                x = random.Next(0, countOfCells);
+                y = random.Next(0, countOfCells);
+            }
             unitsPositions.Add(i, new Point(random.Next(0, countOfCells), random.Next(0, countOfCells)));
             field[unitsPositions[i].x, unitsPositions[i].y] = 1;
         }
@@ -212,8 +233,19 @@ public class ServerLogic
         return startData.ToString();
     }
 
-    public Dictionary<int, List<Point>> ProvideUnitPaths(List<int> unitsToMove, Point destination)
+    public string ProvideUnitPaths(string receivedData)
     {
+        List<int> unitsToMove = new List<int>();
+        Point destination = new Point();
+
+        string[] data = receivedData.Split(',');
+        for (int i = 0; i < data.Count() - 3; i++)
+        {
+            unitsToMove.Add(int.Parse(data[i]));
+        }
+        destination.x = int.Parse(data[data.Count() - 3]);
+        destination.y = int.Parse(data[data.Count() - 2]);
+        
         //пути без учета пересечений юнитов
         Dictionary<int, List<Point>> initialPaths = new Dictionary<int, List<Point>>();
         Dictionary<int, List<Point>> finalPaths = new Dictionary<int, List<Point>>();
@@ -254,11 +286,23 @@ public class ServerLogic
                 initialPaths[unitID].RemoveAt(0);
             }
         }
-        return finalPaths;
+
+        //преобразуем данные в одну строку для отправки клиенту
+
+        StringBuilder sendData = new StringBuilder();
+        sendData.Append("2,");
+        foreach (KeyValuePair<int, List<Point>> entry in finalPaths)
+        {
+            sendData.Append(entry.Key.ToString());
+            for (int i = 0; i < entry.Value.Count; i++)
+            {
+                sendData.Append("$" + entry.Value[i].x.ToString() + "$" + entry.Value[i].y.ToString());
+            }
+            sendData.Append(",");
+        }
+        sendData.Append("#");
+        return sendData.ToString();
     }
-
-
-
 
     public List<Point> FindPath(Point start, Point goal)
     {
