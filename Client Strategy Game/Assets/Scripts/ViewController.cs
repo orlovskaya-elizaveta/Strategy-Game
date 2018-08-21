@@ -7,6 +7,12 @@ using System.Text;
 
 public class ViewController : MonoBehaviour {
 
+    private bool draw;
+    private Vector2 startPos;
+    private Vector2 endPos;
+    private Rect rect;
+    public GUISkin skin;
+
     NetworkManager networkManager;
     int countOfCells;
     int countOfUnits;
@@ -15,16 +21,14 @@ public class ViewController : MonoBehaviour {
     Dictionary<int, Transform> allUnits;
     Dictionary<int, List<Point>> unitsPaths;
 
-    bool isWalking;
+    private bool isWalking;
     private float startTime;
     Dictionary<int, DataForMove> MoveDataList;
     float journeyLength = 1;
-    public StringBuilder sendData;
+    private StringBuilder sendData;
 
-    public bool haveDataToSend = false;
+    void Start () {
 
-    // Use this for initialization
-    void Awake () {
         selectedUnits = new Dictionary<int, Transform>();
         unitsPaths = new Dictionary<int, List<Point>>();
         MoveDataList = new Dictionary<int, DataForMove>();
@@ -33,50 +37,79 @@ public class ViewController : MonoBehaviour {
         isWalking = false;
         startTime = Time.time;
         networkManager = new NetworkManager(this);
+        draw = false;
     }
 
-    // Update is called once per frame
-    void Update () {
-
+    void Update()
+    {        
+        //по левому клику выбираем юнита или начинаем рисовать рамку для выбора
         if (Input.GetMouseButtonDown(0) && !isWalking)
+        {
+            //очищаем список выбранных юнитов
+            CleanSelectedUnits();
+
+            //начинаем рисовать рамку
+            startPos = Input.mousePosition;
+            draw = true;
+
+            //выбираем юнит, на которого кликнули
+            SelectUnit();
+        }
+
+        //при отпускании левой кнопки мыши заканчиваем рисовать рамку
+        if (Input.GetMouseButtonUp(0) && !isWalking)
+        {
+            draw = false;
+        }
+
+        //по клику на правую кнопку мыши - перемещение
+        if (Input.GetMouseButtonUp(1) && !isWalking)
         {
             RaycastHit hit;
             Ray ray = GetComponent<Camera>().ScreenPointToRay(Input.mousePosition);
             if (Physics.Raycast(ray, out hit))
-                if (hit.transform.tag == "Unit")
-                {
-                    SelectUnit(hit.transform.GetComponent<Unit>());
-                }
-                else if (hit.transform.tag == "Cell")
+                if (hit.transform.tag == "Cell")
                 {
                     MoveUnitsTo(hit.transform.position);
                 }
         }
-        
+
         if (isWalking)
         {
             //рисуем движение
+            //все юниты совершают шаги одновременно, пока хотя бы у одного еще есть куда идти
             if (unitsPaths.Any(entry => (entry.Value != null) && (entry.Value.Count != 0)))
             {
                 foreach (KeyValuePair<int, Transform> entry in selectedUnits)
                 {
+                    //если юниту не нужно никуда идти, он остается на месте
                     if (unitsPaths[entry.Key] != null && unitsPaths[entry.Key].Count > 0)
                     {
                         float distCovered = (Time.time - MoveDataList[entry.Key].startTime) * 5.0f;
                         float fracJourney = distCovered / journeyLength;
                         if (fracJourney > 1) fracJourney = 1;
+                        entry.Value.GetComponent<Unit>().SetRunAnimation(true);
 
+                        //поворот юнита по направлению движения
+                        Vector3 point = MoveDataList[entry.Key].endPos;
+                        point.y = entry.Value.position.y;
+                        entry.Value.LookAt(point);
+                       
+                        //перемещение юнита
                         entry.Value.position = Vector3.Lerp(MoveDataList[entry.Key].startPos, MoveDataList[entry.Key].endPos, fracJourney);
 
+                        //если юнит дошел до точки очередного шага, она исключается из его пути
                         if (entry.Value.position == MoveDataList[entry.Key].endPos)
                         {
                             unitsPaths[entry.Key].RemoveAt(0);
-
+                            //движение завершается, когда из пути удаляются все точки
                             if (unitsPaths[entry.Key].Count > 0)
                             {
                                 MoveDataList[entry.Key] = new DataForMove
-                                    (entry.Value.position, new Vector3(unitsPaths[entry.Key].First().x, 1, unitsPaths[entry.Key].First().y));
+                                    (entry.Value.position, new Vector3(unitsPaths[entry.Key].First().x, 0.5f, unitsPaths[entry.Key].First().y));
                             }
+                            else
+                                entry.Value.GetComponent<Unit>().SetRunAnimation(false);
                         }
                     }
                 }
@@ -85,45 +118,105 @@ public class ViewController : MonoBehaviour {
             {
                 isWalking = false;
                 MoveDataList.Clear();
+                foreach (KeyValuePair<int, Transform> entry in selectedUnits)
+                    entry.Value.GetComponent<Unit>().SetRunAnimation(false);
             }
         }
     }
 
+    void OnGUI()
+    {        
+        if (draw)
+        {
+            //очищаем список выбранных и начинаем рисовать рамку
+            CleanSelectedUnits();
+
+            endPos = Input.mousePosition;
+            if (startPos == endPos)
+            {
+                SelectUnit();
+                return;
+            }
+
+            rect = new Rect(Mathf.Min(endPos.x, startPos.x),
+                            Screen.height - Mathf.Max(endPos.y, startPos.y),
+                            Mathf.Max(endPos.x, startPos.x) - Mathf.Min(endPos.x, startPos.x),
+                            Mathf.Max(endPos.y, startPos.y) - Mathf.Min(endPos.y, startPos.y)
+                            );
+
+            GUI.Box(rect, "");
+
+            for (int j = 0; j < allUnits.Count; j++)
+            {
+                // трансформируем позицию объекта из мирового пространства, в пространство экрана
+                Vector2 tmp = new Vector2(Camera.main.WorldToScreenPoint(allUnits[j].position).x, Screen.height
+                    - Camera.main.WorldToScreenPoint(allUnits[j].position).y);
+                // если объект находится в рамке, добавляем его в список выделенных
+                if (rect.Contains(tmp)) 
+                {
+                    SelectUnit(allUnits[j].GetComponent<Unit>());
+                }
+            }
+        }
+    }
+    
+    //выделение юнита по ссылке
     private void SelectUnit (Unit unit)
     {
-        unit.ChangeFlag();
-        if (selectedUnits.ContainsKey(unit.id))
-            selectedUnits.Remove(unit.id);
-        else
-            selectedUnits.Add(unit.id, unit.transform);
+        unit.SetFlag(true);
+        selectedUnits.Add(unit.id, unit.transform);
+    }
+
+    //выделение юнита под курсором мыши
+    private void SelectUnit()
+    {
+        RaycastHit hit;
+        Ray ray = GetComponent<Camera>().ScreenPointToRay(Input.mousePosition);
+        if (Physics.Raycast(ray, out hit))
+            if (hit.transform.tag == "Unit")
+            {
+                SelectUnit(hit.transform.GetComponent<Unit>());
+            }
     }
 
     private void MoveUnitsTo(Vector3 destination)
     {
         if (selectedUnits.Count > 0)
         {
-            //запрашиваем информацию о траекториях движения
+            sendData.Remove(0, sendData.Length);
+
+            //подготавливаем данные для отправки на сервер
             List<int> units = new List<int>();
             foreach (KeyValuePair<int, Transform> entry in selectedUnits)
             {
                 units.Add(entry.Key);
             }
-
-            sendData.Remove(0, sendData.Length);
-            //складываем все данные в одну строку
+            
             foreach (int unit in units)
             {
                 sendData.Append(unit.ToString() + ",");
             }
             sendData.Append(destination.x.ToString() + "," + destination.z.ToString() + ",#");
 
+            //отправляем запрос на сервер
             networkManager.SendMoveIntent(sendData.ToString());
+        }
+    }
+
+    private void CleanSelectedUnits()
+    {
+        if ((selectedUnits != null) && (selectedUnits.Count != 0))
+        {
+            foreach (KeyValuePair<int, Transform> entry in selectedUnits)
+            {
+                entry.Value.GetComponent<Unit>().SetFlag(false);
+            }
+            selectedUnits.Clear();
         }
     }
 
     public void ExecuteCommand(string cmd)
     {
-        Debug.Log(cmd);
         string[] data = cmd.Split(',');
         //если первый символ 1 - пришли начальные данные
         if (data[0].Equals("1"))
@@ -144,10 +237,12 @@ public class ViewController : MonoBehaviour {
                 int id = int.Parse(data[3 + 3 * k]);
                 int x = int.Parse(data[3 + 3 * k + 1]);
                 int y = int.Parse(data[3 + 3 * k + 2]);
-                GameObject unit = Instantiate(Resources.Load<GameObject>("Unit"), new Vector3(x, 1, y), Quaternion.identity);
+                GameObject unit = Instantiate((Resources.Load<GameObject>("Footman_Blue")), new Vector3(x, 0.5f, y), Quaternion.identity);
                 unit.GetComponent<Unit>().id = id;
                 allUnits.Add(id, unit.transform);
             }
+
+            this.transform.position = new Vector3(countOfCells / 2, transform.position.y, transform.position.z);
         }
         //если первый символ 2 - пришли данные о маршрутах выделенных юнитов
         else if (data[0].Equals("2"))
@@ -170,7 +265,7 @@ public class ViewController : MonoBehaviour {
                 int id = entry.Key;
                 if ((unitsPaths[id] != null) && (unitsPaths[id].Count != 0))
                 {
-                    DataForMove dataForMove = new DataForMove(allUnits[id].position, new Vector3(unitsPaths[id].First().x, 1, unitsPaths[id].First().y));
+                    DataForMove dataForMove = new DataForMove(allUnits[id].position, new Vector3(unitsPaths[id].First().x, 0.5f, unitsPaths[id].First().y));
                     MoveDataList.Add(id, dataForMove);
                 }
             }
@@ -197,7 +292,6 @@ public struct Point
         return (p1.x != p2.x) || (p1.y != p2.y);
     }
 }
-
 
 public struct DataForMove
 {

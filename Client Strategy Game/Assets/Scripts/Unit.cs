@@ -7,22 +7,42 @@ public class Unit : MonoBehaviour {
     public int id;
     public bool isSelected;
     GameObject flag;
+    private Animator animator;
+    private CharState State
+    {
+        get { return (CharState)animator.GetInteger("State"); }
+        set { animator.SetInteger("State", (int)value); }
+    }
 
-    // Use this for initialization
     void Start () {
 
         isSelected = false;
-
+        animator = GetComponent<Animator>();
         flag = Instantiate(Resources.Load<GameObject>("Sphere"));
         flag.transform.SetParent(this.transform);
-        flag.transform.localPosition = new Vector3(0, 1f, 0);
+        flag.transform.localPosition = new Vector3(0, 3f, 0);
         flag.SetActive(false);
-
+        State = CharState.Idle;
     }
 
-    public void ChangeFlag ()
+    public void SetFlag (bool isSelected)
     {
-        isSelected = !isSelected;
+        this.isSelected = isSelected;
         flag.SetActive(isSelected);
     }
+
+    public void SetRunAnimation (bool isWalking)
+    {
+        if (isWalking)
+            State = CharState.Run;
+        else
+            State = CharState.Idle;
+    }
+
+    public enum CharState
+    {
+        Idle,
+        Run
+    }
+
 }

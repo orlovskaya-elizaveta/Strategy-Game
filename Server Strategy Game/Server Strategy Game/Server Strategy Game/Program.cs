@@ -162,10 +162,6 @@ public class AsynchronousSocketListener
             // Complete sending the data to the remote device.  
             int bytesSent = handler.EndSend(ar);
             Console.WriteLine("Sent {0} bytes to client.", bytesSent);
-
-
-            //handler.Shutdown(SocketShutdown.Both);
-            //handler.Close();
         }
         catch (Exception e)
         {
@@ -180,8 +176,6 @@ public class AsynchronousSocketListener
     }
 }
     
-
-
 
 
 public class ServerLogic
@@ -199,6 +193,7 @@ public class ServerLogic
         unitsPositions = new Dictionary<int, Point>();
         field = new int[countOfCells, countOfCells];
 
+        //генерируем карту
         for (int i = 0; i < countOfCells; i++)
             for (int j = 0; j < countOfCells; j++)
             {
@@ -223,6 +218,7 @@ public class ServerLogic
 
         //складываем все данные в одну строку
         StringBuilder startData = new StringBuilder();
+
         //первый символ в строке - код команды. 1 - начальные данные, 2 - пути для перемещения юнитов
         startData.Append("1," + countOfCells.ToString() + "," + countOfUnits.ToString());
         foreach (KeyValuePair<int, Point> unit in unitsPositions)
@@ -288,7 +284,6 @@ public class ServerLogic
         }
 
         //преобразуем данные в одну строку для отправки клиенту
-
         StringBuilder sendData = new StringBuilder();
         sendData.Append("2,");
         foreach (KeyValuePair<int, List<Point>> entry in finalPaths)
@@ -306,10 +301,9 @@ public class ServerLogic
 
     public List<Point> FindPath(Point start, Point goal)
     {
-        // Шаг 1.
+        //алгоритм А* для поиска пути
         var closedSet = new Collection<PathNode>();
         var openSet = new Collection<PathNode>();
-        // Шаг 2.
         PathNode startNode = new PathNode()
         {
             Position = start,
@@ -320,36 +314,28 @@ public class ServerLogic
         openSet.Add(startNode);
         while (openSet.Count > 0)
         {
-            // Шаг 3.
             var currentNode = openSet.OrderBy(node =>
               node.EstimateFullPathLength).First();
-            // Шаг 4.
             if (currentNode.Position == goal)
                 return GetPathForNode(currentNode);
-            // Шаг 5.
             openSet.Remove(currentNode);
             closedSet.Add(currentNode);
-            // Шаг 6.
             foreach (var neighbourNode in GetNeighbours(currentNode, goal, field))
             {
-                // Шаг 7.
                 if (closedSet.Count(node => node.Position == neighbourNode.Position) > 0)
                     continue;
                 var openNode = openSet.FirstOrDefault(node =>
                   node.Position == neighbourNode.Position);
-                // Шаг 8.
                 if (openNode == null)
                     openSet.Add(neighbourNode);
                 else
                   if (openNode.PathLengthFromStart > neighbourNode.PathLengthFromStart)
                 {
-                    // Шаг 9.
                     openNode.CameFrom = currentNode;
                     openNode.PathLengthFromStart = neighbourNode.PathLengthFromStart;
                 }
             }
         }
-        // Шаг 10.
         return null;
     }
 
